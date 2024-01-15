@@ -60,7 +60,7 @@ class DominatedConnectFour(pyspiel.Game):
 
 
 class DominatedConnectFourState(pyspiel.State):
-    """A python version of the Tic-Tac-Toe state."""
+    """A python version of the C4 state with a dominant strategy corrupting the game."""
 
     def __init__(self, game):
         """Constructor; should only be called by Game.new_initial_state."""
@@ -91,12 +91,12 @@ class DominatedConnectFourState(pyspiel.State):
         self.action_memory[self.current_player()].append(action)
         if len(self.action_memory[self.current_player()]) > 2:
             self.action_memory[self.current_player()].pop(0)
-        if np.all(self.action_memory[0] == [1, 6]):
+        if np.all(self.action_memory[self.current_player()] == [1, 6]):
             # end the game
             self._is_terminal = True
             self._returns = [0, 0]
-            self._returns[0] = 1
-            self._returns[1 - 0] = -1
+            self._returns[self.current_player()] = 1
+            self._returns[1 - self.current_player()] = -1
 
         self.__pyspiel_game_state.apply_action(action)
 
@@ -135,3 +135,4 @@ class DominatedConnectFourState(pyspiel.State):
 
 
 pyspiel.register_game(_GAME_TYPE, DominatedConnectFour)
+
