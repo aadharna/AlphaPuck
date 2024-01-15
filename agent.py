@@ -149,10 +149,10 @@ class TrainInput(
         policy = np.array(policy)
         value = np.array(value)
 
-        obs = torch.tensor(observation).float()
-        mask = torch.tensor(legals_mask).bool()
-        policy = torch.tensor(policy).float()
-        value = torch.tensor(value).unsqueeze(1).float()
+        obs = torch.from_numpy(observation).float()
+        mask = torch.from_numpy(legals_mask).bool()
+        policy = torch.from_numpy(policy).float()
+        value = torch.from_numpy(value).unsqueeze(1).float()
 
         return TrainInput(obs, mask, policy, value)
 
