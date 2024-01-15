@@ -1,2 +1,0 @@
-# AlphaPuck
-Alpha Zero+
