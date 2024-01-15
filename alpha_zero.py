@@ -570,7 +570,7 @@ if __name__ == "__main__":
     config = Config(
         game="connect_four",
         path="test",
-        learning_rate=3e-4,
+        learning_rate=0.001,
         weight_decay=0.0001,
         train_batch_size=1024,
         replay_buffer_size=100000,
