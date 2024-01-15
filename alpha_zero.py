@@ -596,14 +596,13 @@ if __name__ == "__main__":
     )
 
     os.environ['WANDB_API_KEY'] = "ADD ME"
-    run = wandb.init(project="AlphaPuck", config=config._asdict())
+    # run = wandb.init(project="AlphaPuck", config=config._asdict())
     
 
     alpha_zero(config)
 
-    artifact = wandb.Artifact(name="models", type="model")
-    artifact.add_dir(local_path=config.path)  # Add dataset directory to artifact
-    run.log_artifact(artifact)
-
+    # artifact = wandb.Artifact(name="models", type="model")
+    # artifact.add_dir(local_path=config.path)  # Add dataset directory to artifact
+    # run.log_artifact(artifact)
 
     ray.shutdown()
