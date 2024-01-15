@@ -595,7 +595,7 @@ if __name__ == "__main__":
         alpha_puck=False,
     )
 
-    os.environ['WANDB_API_KEY'] = "46923d58325f97b221854ad7a99e6e3eea85ce71"
+    os.environ['WANDB_API_KEY'] = "ADD ME"
     run = wandb.init(project="AlphaPuck", config=config._asdict())
     
 
