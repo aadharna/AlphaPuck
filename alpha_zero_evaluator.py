@@ -42,14 +42,14 @@ class AlphaZeroEvaluator(mcts.Evaluator):
         # ndarray isn't hashable
         cache_key = obs.tobytes() + mask.tobytes()
 
-        obs = torch.from_numpy(obs).float()
-        mask = torch.from_numpy(mask).bool()
+        obs = torch.from_numpy(obs).float() # .to(self._model.device)
+        mask = torch.from_numpy(mask).bool() # .to(self._model.device)
         # for now, just use the policy; don't hash
         with torch.no_grad():
             _, _, _, value, probs, logits = self._model.get_action_and_value(obs, mask)
 
         v = value[0, 0].item()
-        probs = probs[0].detach().numpy()
+        probs = probs[0].detach().numpy() # .cpu().numpy()
 
         return v, probs  # Unpack batch
 
@@ -143,7 +143,7 @@ class AZPopulationEvaluator(mcts.Evaluator):
         
         # check novelty of response vector
         is_novel, dist = self.is_novel(response_vector)
-        return [dist, -dist]
+        return np.array([dist, -dist])
 
     def prior(self, state):
         return self.current_agent.evaluator.prior(state)
