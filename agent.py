@@ -96,7 +96,7 @@ class NNAgent(nn.Module):
         )
 
     def update(self, lr, optimizer, train_inputs):
-        batch = TrainInput.stack(train_inputs)
+        batch = TrainInput.stack(train_inputs, self.device)
 
         actions, log_probs, entropy, values, probs, logits = self.get_action_and_value(batch.observation, batch.legals_mask)
 
@@ -129,7 +129,7 @@ class NNAgent(nn.Module):
             value_loss.item(),
             l2_loss.item(),
         )
-    
+
     def save_checkpoint(self, model_id, folder, prefix=''):
         if prefix:
             prefix += '-'
@@ -142,17 +142,17 @@ class TrainInput(
     """Inputs for training the Model."""
 
     @staticmethod
-    def stack(train_inputs):
+    def stack(train_inputs, device):
         observation, legals_mask, policy, value = zip(*train_inputs)
         observation = np.array(observation)
         legals_mask = np.array(legals_mask)
         policy = np.array(policy)
         value = np.array(value)
 
-        obs = torch.from_numpy(observation).float()
-        mask = torch.from_numpy(legals_mask).bool()
-        policy = torch.from_numpy(policy).float()
-        value = torch.from_numpy(value).unsqueeze(1).float()
+        obs = torch.from_numpy(observation).float().to(device)
+        mask = torch.from_numpy(legals_mask).bool().to(device)
+        policy = torch.from_numpy(policy).float().to(device)
+        value = torch.from_numpy(value).unsqueeze(1).float().to(device)
 
         return TrainInput(obs, mask, policy, value)
 

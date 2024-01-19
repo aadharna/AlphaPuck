@@ -138,13 +138,13 @@ def _init_bot(config, game, evaluator_, evaluation):
 class BaseWorker:
     def __init__(self):
         pass
-    
+
     def play_game(self, game_num, temperature, temperature_drop, evaluation=False):
         trajectory = Trajectory()
         actions = []
         state = self.game.new_initial_state()
         random_state = np.random.RandomState()
-        
+
         while not state.is_terminal():
             if state.is_chance_node():
                 # For chance nodes, rollout according to chance node's probability
@@ -180,12 +180,14 @@ class BaseWorker:
 
         trajectory.returns = state.returns()
         return trajectory
-        
 
 
-@ray.remote
+
+@ray.remote(num_gpus=0.05)
 class RolloutWorker(BaseWorker):
     def __init__(self, config, evaluation=False):
+        import dominated_c4
+
         super().__init__()
         self.config = config
         self.game = pyspiel.load_game(self.config.game)
@@ -196,9 +198,9 @@ class RolloutWorker(BaseWorker):
         )
 
         if self.config.alpha_puck:
-            self.evaluator = AZPopulationEvaluator(self.game, _init_bot, self.model, 
-                                                   NNAgent(self.config.output_size, 
-                                                           self.observation_shape, 
+            self.evaluator = AZPopulationEvaluator(self.game, _init_bot, self.model,
+                                                   NNAgent(self.config.output_size,
+                                                           self.observation_shape,
                                                            self.device),
                                                     self.config)
         else:
@@ -208,7 +210,7 @@ class RolloutWorker(BaseWorker):
             _init_bot(self.config, self.game, self.evaluator, evaluation),
             _init_bot(self.config, self.game, self.evaluator, evaluation),
         ]
-                
+
 
     def update_model(self, model_weights):
         if self.config.alpha_puck:
@@ -218,12 +220,12 @@ class RolloutWorker(BaseWorker):
 
     def update_matrix(self, response_matrix):
         self.evaluator.update_A(response_matrix)
-    
+
     def play_game(self, game_num, temperature, temperature_drop, evaluation=False):
         return super().play_game(game_num, temperature, temperature_drop, evaluation)
 
 
-@ray.remote
+@ray.remote(num_gpus=0.05)
 class EvalWorker(BaseWorker):
     def __init__(self, config):
         super().__init__()
@@ -240,9 +242,9 @@ class EvalWorker(BaseWorker):
         )
 
         if self.config.alpha_puck:
-            self.evaluator = AZPopulationEvaluator(self.game, _init_bot, self.model, 
-                                                   NNAgent(self.config.output_size, 
-                                                           self.observation_shape, 
+            self.evaluator = AZPopulationEvaluator(self.game, _init_bot, self.model,
+                                                   NNAgent(self.config.output_size,
+                                                           self.observation_shape,
                                                            self.device),
                                                     self.config)
         else:
@@ -262,7 +264,7 @@ class EvalWorker(BaseWorker):
 
     def update_matrix(self, response_matrix):
         self.evaluator.update_A(response_matrix)
-    
+
     def play_game(self, game_num, temperature=1, temperature_drop=0):
         if self.clear_data:
             self.evals = [Buffer(self.config.evaluation_window) for _ in range(self.config.eval_levels)]
@@ -290,7 +292,7 @@ class EvalWorker(BaseWorker):
         self.evals[difficulty].append(trajectory.returns[az_player])
 
         return trajectory
-    
+
     def get_evals(self):
         self.clear_data = True
         return self.evals
@@ -402,9 +404,11 @@ def alpha_zero(config: Config):
     with open(os.path.join(config.path, "config.json"), "w") as fp:
         fp.write(json.dumps(config._asdict(), indent=2, sort_keys=True) + "\n")
 
-    model = NNAgent(config.output_size, config.observation_shape, "gpu")
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, 
-                                 # weight_decay=config.weight_decay, 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    model = NNAgent(config.output_size, config.observation_shape, device).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate,
+                                 # weight_decay=config.weight_decay,
                                  eps=1e-5)
 
     replay_buffer = Buffer(max_size=config.replay_buffer_size)
@@ -446,7 +450,8 @@ def alpha_zero(config: Config):
 
         # collect new data to learn off of
         working_refs = []
-        reps = 1000 // config.num_actors
+        rollouts = 1000 if config.game == 'connect_four' else 4000
+        reps = rollouts // config.num_actors
         for k in range(reps):
             for j in range(config.num_actors):
                 working_refs.append(
@@ -508,9 +513,9 @@ def alpha_zero(config: Config):
             remote_evals = ray.get(remote_eval_refs)
             for diff in range(config.eval_levels):
                 evals[diff].extend(remote_evals[diff].data)
-        
+
         eval_games += n
-            
+
         batch_size_stats = stats.BasicStats()  # Only makes sense in C++.
         batch_size_stats.add(1)
         data_log.write(
@@ -561,6 +566,7 @@ def alpha_zero(config: Config):
 
 if __name__ == "__main__":
     import os
+    import dominated_c4
 
     sep = os.pathsep
     os.environ["PYTHONPATH"] = sep.join(sys.path)
@@ -568,8 +574,8 @@ if __name__ == "__main__":
     ray.init(num_gpus=1)
 
     config = Config(
-        game="connect_four",
-        path="test",
+        game="python_dominated_connect_four",
+        path="dc4.2",
         learning_rate=0.001,
         weight_decay=0.0001,
         train_batch_size=1024,
@@ -577,10 +583,10 @@ if __name__ == "__main__":
         replay_buffer_reuse=4,
         max_steps=500,
         checkpoint_freq=50,
-        num_actors=25,
-        evaluators=4,
+        num_actors=10,
+        evaluators=6,
         evaluation_window=100,
-        eval_levels=7,
+        eval_levels=6,
         uct_c=2,
         max_simulations=100,
         policy_alpha=1,
