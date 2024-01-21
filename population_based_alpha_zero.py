@@ -64,6 +64,7 @@ class Config(
             "alpha_puck",
             "neighbors",
             "threshold",
+            "rollout_type",
         ],
     )
 ):
@@ -245,7 +246,7 @@ class RolloutWorker(BaseWorker):
             _init_bot(self.config, self.game, self.evaluator, False),
             _init_bot(self.config, self.game, self.evaluator, False),
         ]
-        return response_vector
+        return np.array(response_vector)
 
 @ray.remote(num_gpus=0.05)
 class EvalWorker(BaseWorker):
@@ -466,8 +467,8 @@ def alpha_zero(config: Config):
     eval_workers = [EvalWorker.remote(config) for _ in range(config.eval_levels)]
     eval_games = 0
 
-    t = novelty_worker.play_game.remote(0, 1, 0, evaluation=True)
-    outcome_matrix = np.zeros([[t.returns[1]]])
+    t = ray.get(novelty_worker.play_game.remote(0, 1, 0, evaluation=True))
+    outcome_matrix = np.array([[t.returns[1]]])
 
     now = time.time()
     last_time = now
@@ -528,7 +529,7 @@ def alpha_zero(config: Config):
         last_time = now
 
         # calculate novelty against the trajectories
-        response_vector = novelty_worker.current_v_pop()
+        response_vector = ray.get(novelty_worker.current_v_pop.remote())
 
         a_vec = np.array(response_vector).flatten()
         # logger.print('a_vec', a_vec)
@@ -577,7 +578,7 @@ def alpha_zero(config: Config):
             historical_agents, novelty_agents = policy_pool.policy_names()
 
             if novelty_agents:
-                vs_checkpoint_policies = novelty_worker.current_v_pop(historical=False)
+                vs_checkpoint_policies = ray.get(novelty_worker.current_v_pop.remote(historical=False))
             else:
                 vs_checkpoint_policies = np.zeros(1)                
             
@@ -700,6 +701,7 @@ if __name__ == "__main__":
         alpha_puck=False,
         neighbors=5,
         threshold=0.15,
+        rollout_type=None,
     )
 
     os.environ['WANDB_API_KEY'] = "ADD ME"
