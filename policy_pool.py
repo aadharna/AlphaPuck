@@ -34,17 +34,11 @@ class PolicyStore:
         # or similarly for the novelty population ['novelty-model-1', 'novelty-model-2', ...]
         # so we sort by the number after the dash
         if novelty_population:
-            try:
-                novelty_population = sorted(novelty_population, key=lambda x: int(x.split('-')[2]))
-            except IndexError:
-                novelty_population = sorted(novelty_population, key=lambda x: int(x.split('-')[1]))
+            novelty_population = sorted(novelty_population, key=lambda x: int(x.split('-')[-1]))
         
         if checkpoint_population:
-            try:
-                checkpoint_population = sorted(checkpoint_population, key=lambda x: int(x.split('-')[2]))
-            except IndexError:
-                checkpoint_population = sorted(checkpoint_population, key=lambda x: int(x.split('-')[1]))
-        
+            checkpoint_population = sorted(checkpoint_population, key=lambda x: int(x.split('-')[-1]))
+
         return checkpoint_population, novelty_population
 
     def get_policy(self, name: str):

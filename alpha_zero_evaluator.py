@@ -73,14 +73,14 @@ class AlphaZeroEvaluator(mcts.Evaluator):
 
 
 class AZPopulationEvaluator(mcts.Evaluator):
-    def __init__(self, game, init_bot_fn, primary_model, opponent_model, config, k=5):
+    def __init__(self, game, init_bot_fn, primary_model, opponent_model, config):
         self.game = game
         self.config = config
         # each individual of the population gets 1/5 of the max simulation budget
         self.config = config._replace(max_simulations=config.max_simulations // 5)
         self.model = primary_model
-        self.k = k
-        self.threshold = 0.15
+        self.k = self.config.neighbors
+        self.threshold = self.config.threshold
         self.init_bot_fn = init_bot_fn
         self.cache_size = 2**20
         self.rollout_type = config.rollout_type
@@ -116,7 +116,7 @@ class AZPopulationEvaluator(mcts.Evaluator):
             print(self.A, a)
             raise ValueError("Novelty archive and response vector do not match in dims")
         dists = np.linalg.norm(self.A - a, axis=1)
-        knn = np.argsort(dists)[: self.k]
+        knn = np.argsort(dists)[:self.k]
         knn_dists = dists[knn]
         avg_dist = np.mean(knn_dists)
         normalized_dist = avg_dist / (2 * np.sqrt(a.shape[0]))
@@ -172,6 +172,9 @@ class AZPopulationEvaluator(mcts.Evaluator):
         p2_result = results[1] / n
         return p1_result, p2_result
 
+    def update_model(self, state_dict):
+        self.update_current_agent(state_dict)
+    
     def update_current_agent(self, state_dict):
         self.current_agent.evaluator._model.load_state_dict(state_dict)
         self.current_agent.evaluator.clear_cache()

@@ -27,6 +27,7 @@ import wandb
 
 import mcts
 
+from policy_pool import PolicyStore
 from agent import NNAgent, TrainInput, Losses
 from alpha_zero_evaluator import AlphaZeroEvaluator, AZPopulationEvaluator
 import dominated_c4
@@ -61,6 +62,8 @@ class Config(
             "observation_shape",
             "output_size",
             "alpha_puck",
+            "neighbors",
+            "threshold",
         ],
     )
 ):
@@ -197,7 +200,12 @@ class RolloutWorker(BaseWorker):
             self.config.output_size, self.observation_shape, self.device
         )
 
-        self.evaluator = AlphaZeroEvaluator(self.game, self.model)
+        self.evaluator = AZPopulationEvaluator(self.game, _init_bot, 
+                                               self.model,
+                                               NNAgent(self.config.output_size,
+                                                        self.observation_shape,
+                                                        self.device),
+                                               self.config)
 
         self.bots = [
             _init_bot(self.config, self.game, self.evaluator, evaluation),
@@ -206,15 +214,38 @@ class RolloutWorker(BaseWorker):
 
 
     def update_model(self, model_weights):
-        self.model.load_state_dict(model_weights)
+        self.evaluator.update_current_agent(model_weights)
 
     def update_matrix(self, response_matrix):
-        pass
-        # self.evaluator.update_A(response_matrix)
+        self.evaluator.update_A(response_matrix)
 
     def play_game(self, game_num, temperature, temperature_drop, evaluation=False):
         return super().play_game(game_num, temperature, temperature_drop, evaluation)
-
+    
+    def current_v_pop(self, historical=True):
+        historical_agents, novelty_agents = self.evaluator.policy_pool.policy_names()
+        historical_agents = historical_agents[:self.evaluator.A.shape[1]]
+        p1 = self.evaluator.current_agent
+        p2 = self.evaluator.opponent
+        self.bots = [p1, p2]
+        opponent_set = historical_agents if historical else novelty_agents
+        old_opponent = self.evaluator.opponent.evaluator._model.state_dict()
+        
+        # play a game against each historical bot
+        response_vector = []
+        for agent_name in opponent_set:
+            state_dict = self.evaluator.policy_pool.get_policy(agent_name)
+            self.evaluator.update_opponent(state_dict)
+            traj = self.play_game(0, 1, 0, evaluation=True)
+            outcome = traj.returns[1] if historical else traj.returns[0]
+            response_vector.append(outcome)
+        
+        self.evaluator.update_opponent(old_opponent)
+        self.bots = [
+            _init_bot(self.config, self.game, self.evaluator, False),
+            _init_bot(self.config, self.game, self.evaluator, False),
+        ]
+        return response_vector
 
 @ray.remote(num_gpus=0.05)
 class EvalWorker(BaseWorker):
@@ -232,7 +263,12 @@ class EvalWorker(BaseWorker):
             self.config.output_size, self.observation_shape, self.device
         )
 
-        self.evaluator = AlphaZeroEvaluator(self.game, self.model)
+        self.evaluator = AZPopulationEvaluator(self.game, _init_bot, 
+                                               self.model,
+                                               NNAgent(self.config.output_size,
+                                                        self.observation_shape,
+                                                        self.device),
+                                               self.config)
 
         self.results = Buffer(config.evaluation_window)
         self.random_evaluator = mcts.RandomRolloutEvaluator()
@@ -241,11 +277,10 @@ class EvalWorker(BaseWorker):
         self.model.eval()
 
     def update_model(self, model_weights):
-        self.model.load_state_dict(model_weights)
+        self.evaluator.update_current_agent(model_weights)
 
     def update_matrix(self, response_matrix):
-        # self.evaluator.update_A(response_matrix)
-        pass
+        self.evaluator.update_A(response_matrix)
 
     def play_game(self, game_num, temperature=1, temperature_drop=0):
         if self.clear_data:
@@ -280,64 +315,63 @@ class EvalWorker(BaseWorker):
         return self.evals
 
 
-def collect_trajectories_into_dataset(
-    replay_buffer,
-    game_lengths,
-    game_lengths_hist,
-    outcomes,
-    stage_count,
-    value_accuracies,
-    value_predictions,
-    learn_rate,
-    working_refs,
-):
+def collect_trajectories(learn_rate, working_refs):
     """Collects the trajectories from actors into the replay buffer."""
     num_trajectories = 0
     num_states = 0
-    done = False
+    trajectories = []
 
     while len(working_refs):
         # ray.wait will return the trajectories one at a time
         done_refs, working_refs = ray.wait(working_refs)
         trajectory = ray.get(done_refs[0])
-
-        if not done:
-            num_trajectories += 1
-            num_states += len(trajectory.states)
-            game_lengths.add(len(trajectory.states))
-            game_lengths_hist.add(len(trajectory.states))
-
-            p1_outcome = trajectory.returns[0]
-            if p1_outcome > 0:
-                outcomes.add(0)
-            elif p1_outcome < 0:
-                outcomes.add(1)
-            else:
-                outcomes.add(2)
-
-            # this will automatically drop the oldest inputs once the buffer fills up
-            replay_buffer.extend(
-                TrainInput(s.observation, s.legals_mask, s.policy, p1_outcome)
-                for s in trajectory.states
-            )
-
-            for stage in range(stage_count):
-                # Scale for the length of the game
-                index = (len(trajectory.states) - 1) * stage // (stage_count - 1)
-                n = trajectory.states[index]
-                accurate = (n.value >= 0) == (trajectory.returns[n.current_player] >= 0)
-                value_accuracies[stage].add(1 if accurate else 0)
-                value_predictions[stage].add(abs(n.value))
+        trajectories.append(trajectory)
+        num_trajectories += 1
+        num_states += len(trajectory.states)
 
         # learn_rate = config.replay_buffer_size // config.replay_buffer_reuse
         #  this means that when the buffer is 1/config.replay_buffer_reuse full, we will learn
         #  Therefore, this will use the same data config.replay_buffer_reuse times
         if num_states >= learn_rate:
-            done = True
             _ = ray.get(working_refs)
             working_refs = []
 
-    return num_trajectories, num_states
+    return num_trajectories, num_states, trajectories
+
+def parse_trajectories_into_dataset(trajectories,
+                                    replay_buffer,
+                                    game_lengths,
+                                    game_lengths_hist,
+                                    outcomes,
+                                    stage_count,
+                                    value_accuracies,
+                                    value_predictions):
+
+    for trajectory in trajectories:
+        game_lengths.add(len(trajectory.states))
+        game_lengths_hist.add(len(trajectory.states))
+
+        p1_outcome = trajectory.returns[0]
+        if p1_outcome > 0:
+            outcomes.add(0)
+        elif p1_outcome < 0:
+            outcomes.add(1)
+        else:
+            outcomes.add(2)
+
+        # this will automatically drop the oldest inputs once the buffer fills up
+        replay_buffer.extend(
+            TrainInput(s.observation, s.legals_mask, s.policy, p1_outcome)
+            for s in trajectory.states
+        )
+
+        for stage in range(stage_count):
+            # Scale for the length of the game
+            index = (len(trajectory.states) - 1) * stage // (stage_count - 1)
+            n = trajectory.states[index]
+            accurate = (n.value >= 0) == (trajectory.returns[n.current_player] >= 0)
+            value_accuracies[stage].add(1 if accurate else 0)
+            value_predictions[stage].add(abs(n.value))
 
 
 def learn(config, optimizer, model, replay_buffer, step):
@@ -349,6 +383,23 @@ def learn(config, optimizer, model, replay_buffer, step):
     losses = sum(losses, Losses(0, 0, 0)) / len(losses)
     return losses
 
+def is_novel(config, A, a):
+    # A is a matrix of actions
+    # a is a vector of actions
+    # return True if a is novel
+    # calculate the knn distance between a and a's knn in A
+    # if that distance is greater than some threshold, return True, dist
+    # else return False, dist
+    if A.size <= 1:
+        return True, 1
+    assert A.shape[1] == a.shape[0]
+    a = np.array(a)
+    dists = np.linalg.norm(A - a, axis=1)
+    knn = np.argsort(dists)[:config.neighbors]
+    knn_dists = dists[knn]
+    avg_dist = np.mean(knn_dists)
+    normalized_dist = avg_dist / (2 * np.sqrt(a.shape[0]))
+    return normalized_dist >= config.threshold, normalized_dist
 
 def alpha_zero(config: Config):
     game = pyspiel.load_game(config.game)
@@ -388,10 +439,13 @@ def alpha_zero(config: Config):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device)
+    policy_pool = PolicyStore(path)
     model = NNAgent(config.output_size, config.observation_shape, device).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate,
-                                 # weight_decay=config.weight_decay,
                                  eps=1e-5)
+    
+    model.save_checkpoint(0, folder=config.path, prefix="historical")
+    model.save_checkpoint(0, folder=config.path, prefix="novelty")
 
     replay_buffer = Buffer(max_size=config.replay_buffer_size)
     learn_rate = config.replay_buffer_size // config.replay_buffer_reuse
@@ -408,8 +462,12 @@ def alpha_zero(config: Config):
     total_trajectories = 0
 
     workers = [RolloutWorker.remote(config) for _ in range(config.num_actors)]
+    novelty_worker = RolloutWorker.remote(config)
     eval_workers = [EvalWorker.remote(config) for _ in range(config.eval_levels)]
     eval_games = 0
+
+    t = novelty_worker.play_game.remote(0, 1, 0, evaluation=True)
+    outcome_matrix = np.zeros([[t.returns[1]]])
 
     now = time.time()
     last_time = now
@@ -461,32 +519,83 @@ def alpha_zero(config: Config):
             )
 
         # working_refs = [_play_game.remote(game_num, game, bots, temperature, temperature_drop)]
-        num_trajectories, num_states = collect_trajectories_into_dataset(
-            replay_buffer,
-            game_lengths,
-            game_lengths_hist,
-            outcomes,
-            stage_count,
-            value_accuracies,
-            value_predictions,
-            learn_rate,
-            working_refs=working_refs,
-        )
+        num_trajectories, num_states, trajectories = collect_trajectories(learn_rate=learn_rate, 
+                                                                          working_refs=working_refs)
+
         total_trajectories += num_trajectories
         now = time.time()
         seconds = now - last_time
         last_time = now
 
+        # calculate novelty against the trajectories
+        response_vector = novelty_worker.current_v_pop()
+
+        a_vec = np.array(response_vector).flatten()
+        # logger.print('a_vec', a_vec)
+        # logger.print('outcome_matrix', outcome_matrix)
+        novelty_distance = 0
+        if a_vec.shape[0] >= 2 and outcome_matrix.shape[1] >= 2:
+            try:
+                is_vector_novel, novelty_distance = is_novel(config, outcome_matrix, a_vec)
+            except AssertionError:
+                import pdb;
+                pdb.set_trace()
+            if is_vector_novel:
+                try:
+                    outcome_matrix = np.vstack((outcome_matrix, a_vec))
+                except ValueError:
+                    import pdb;
+                    pdb.set_trace()
+                # save the model checkpoint
+                model.save_checkpoint(model_id=i, folder=config.path, prefix='novelty')
+                # Update the outcome matrix
+                novelty_worker.update_matrix.remote(outcome_matrix)
+                for worker in workers:
+                    worker.update_matrix.remote(outcome_matrix)
+
+                for eval_worker in eval_workers:
+                    eval_worker.update_matrix.remote(outcome_matrix)
+
+        # adds data into the replay buffer and other similar containers
+        parse_trajectories_into_dataset(trajectories=trajectories,
+                                        replay_buffer=replay_buffer,
+                                        game_lengths=game_lengths,
+                                        game_lengths_hist=game_lengths_hist,
+                                        outcomes=outcomes,
+                                        stage_count=stage_count,
+                                        value_accuracies=value_accuracies,
+                                        value_predictions=value_predictions)
+        
         # update the model weights
         losses = learn(config, optimizer, model, replay_buffer, i)
         print(i, losses)
 
         # save a checkpoint
         if i % config.checkpoint_freq == 0:
-            save_path = model.save_checkpoint(i, folder=config.path, prefix="historical")
-        # save_path = model.save_checkpoint(
-        #     i if i % config.checkpoint_freq == 0 else -1, folder=config.path, prefix=""
-        # )
+            model.save_checkpoint(i, folder=config.path, prefix="historical")
+            
+            historical_agents, novelty_agents = policy_pool.policy_names()
+
+            if novelty_agents:
+                vs_checkpoint_policies = novelty_worker.current_v_pop(historical=False)
+            else:
+                vs_checkpoint_policies = np.zeros(1)                
+            
+            try:
+                if outcome_matrix.shape[1] == 0:
+                    outcome_matrix = np.append(outcome_matrix, vs_checkpoint_policies.reshape(-1, 1), axis=1)
+                else:
+                    outcome_matrix = np.hstack((outcome_matrix, vs_checkpoint_policies.reshape(-1, 1)))
+            except ValueError:
+                import pdb; pdb.set_trace()
+
+            
+            novelty_worker.update_matrix.remote(outcome_matrix)
+            for worker in workers:
+                worker.update_matrix.remote(outcome_matrix)
+
+            for eval_worker in eval_workers:
+                eval_worker.update_matrix.remote(outcome_matrix)
 
         # hold until these eval runs are all done, then collect the data
         _ = ray.get(working_eval_refs)
@@ -497,6 +606,14 @@ def alpha_zero(config: Config):
                 evals[diff].extend(remote_evals[diff].data)
 
         eval_games += n
+
+        if outcome_matrix.shape[1] < 2:
+            outcom_matrix_cardinality = 0.5
+        else:
+            norms_new = np.linalg.norm(outcome_matrix, axis=1, keepdims=True)
+            M_normalized_new = outcome_matrix / norms_new
+            L_new = np.dot(M_normalized_new, M_normalized_new.T)
+            outcom_matrix_cardinality = np.trace(np.eye(L_new.shape[0]) - np.linalg.inv(L_new + np.eye(L_new.shape[0])))
 
         batch_size_stats = stats.BasicStats()  # Only makes sense in C++.
         batch_size_stats.add(1)
@@ -514,8 +631,8 @@ def alpha_zero(config: Config):
                 "outcomes": outcomes.data,
                 "value_accuracy": [v.as_dict for v in value_accuracies],
                 "value_prediction": [v.as_dict for v in value_predictions],
-                "outcome_matrix_cardinality": 0,
-                "novelty_value": 0,
+                "outcome_matrix_cardinality": outcom_matrix_cardinality,
+                "novelty_value": novelty_distance,
                 "eval": {
                     "count": evals[0].total_seen,
                     "results": [sum(e.data) / len(e) if e else 0 for e in evals],
@@ -557,7 +674,7 @@ if __name__ == "__main__":
 
     config = Config(
         game="python_dominated_connect_four",
-        path="dc4.2",
+        path="puck.dc4",
         learning_rate=0.001,
         weight_decay=0.0001,
         train_batch_size=1024,
@@ -581,6 +698,8 @@ if __name__ == "__main__":
         observation_shape=None,
         output_size=None,
         alpha_puck=False,
+        neighbors=5,
+        threshold=0.15,
     )
 
     os.environ['WANDB_API_KEY'] = "ADD ME"
