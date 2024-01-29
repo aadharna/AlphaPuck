@@ -430,7 +430,7 @@ class MCTSBot(pyspiel.Bot):
             if working_state.is_terminal():
                 returns = working_state.returns()
                 visit_path[-1].outcome = returns
-                solved = self.solve
+                solved = False
             else:
                 returns = self.evaluator.evaluate(working_state)
                 solved = False
@@ -478,7 +478,7 @@ class MCTSBot(pyspiel.Bot):
                             node.outcome = best.outcome
                         else:
                             solved = False
-            if root.outcome is not None:
-                break
+            # if root.outcome is not None:
+            #     break
 
         return root

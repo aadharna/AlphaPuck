@@ -161,6 +161,13 @@ class AZPopulationEvaluator(mcts.Evaluator):
                 actions_and_probs = bot.evaluator.prior(working_state)
                 actions = [a[0] for a in actions_and_probs]
                 probs = [a[1] for a in actions_and_probs]
+                if not sum(probs) == 1:
+                    probs = np.array(probs)
+                    probs /= probs.sum()
+                try:
+                    action = np.random.choice(actions, p=probs)
+                except ValueError:
+                    import pdb; pdb.set_trace()
                 action = np.random.choice(actions, p=probs)
                 working_state.apply_action(action)
 
