@@ -196,12 +196,12 @@ class RolloutWorker(BaseWorker):
         self.config = config
         self.game = pyspiel.load_game(self.config.game)
         self.observation_shape = self.game.observation_tensor_shape()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         self.model = NNAgent(
             self.config.output_size, self.observation_shape, self.device
         )
 
-        self.evaluator = AZPopulationEvaluator(self.game, _init_bot, 
+        self.evaluator = AZPopulationEvaluator(self.game, _init_bot,
                                                self.model,
                                                NNAgent(self.config.output_size,
                                                         self.observation_shape,
@@ -225,22 +225,26 @@ class RolloutWorker(BaseWorker):
     
     def current_v_pop(self, historical=True):
         historical_agents, novelty_agents = self.evaluator.policy_pool.policy_names()
-        historical_agents = historical_agents[:self.evaluator.A.shape[1]]
+        if not self.evaluator.A.size == 0:
+            historical_agents = historical_agents[:self.evaluator.A.shape[1]]
+            novelty_agents = novelty_agents[:self.evaluator.A.shape[0]]
         p1 = self.evaluator.current_agent
         p2 = self.evaluator.opponent
-        self.bots = [p1, p2]
+        self.bots = [p1, p2] if historical else [p2, p1]
         opponent_set = historical_agents if historical else novelty_agents
         old_opponent = self.evaluator.opponent.evaluator._model.state_dict()
-        
+
         # play a game against each historical bot
         response_vector = []
         for agent_name in opponent_set:
             state_dict = self.evaluator.policy_pool.get_policy(agent_name)
             self.evaluator.update_opponent(state_dict)
-            traj = self.play_game(0, 1, 0, evaluation=True)
-            outcome = traj.returns[1] if historical else traj.returns[0]
-            response_vector.append(outcome)
-        
+            outcome = 0
+            for _ in range(5):
+                traj = self.play_game(0, 1, 0, evaluation=True)
+                outcome += traj.returns[1] if historical else traj.returns[0]
+            response_vector.append(outcome / 5)
+
         self.evaluator.update_opponent(old_opponent)
         self.bots = [
             _init_bot(self.config, self.game, self.evaluator, False),
@@ -259,17 +263,19 @@ class EvalWorker(BaseWorker):
             name = self.config.game
         self.game = pyspiel.load_game(name)
         self.observation_shape = self.game.observation_tensor_shape()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         self.model = NNAgent(
             self.config.output_size, self.observation_shape, self.device
         )
 
-        self.evaluator = AZPopulationEvaluator(self.game, _init_bot, 
-                                               self.model,
-                                               NNAgent(self.config.output_size,
-                                                        self.observation_shape,
-                                                        self.device),
-                                               self.config)
+        self.evaluator = AlphaZeroEvaluator(self.game, self.model)
+
+        # self.evaluator = AZPopulationEvaluator(self.game, _init_bot,
+        #                                        self.model,
+        #                                        NNAgent(self.config.output_size,
+        #                                                 self.observation_shape,
+        #                                                 self.device),
+        #                                        self.config)
 
         self.results = Buffer(config.evaluation_window)
         self.random_evaluator = mcts.RandomRolloutEvaluator()
@@ -439,15 +445,16 @@ def alpha_zero(config: Config):
         fp.write(json.dumps(config._asdict(), indent=2, sort_keys=True) + "\n")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device('cpu')
     print(device)
     policy_pool = PolicyStore(path)
     model = NNAgent(config.output_size, config.observation_shape, device).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate,
                                  eps=1e-5)
-    
+
     model.save_checkpoint(0, folder=config.path, prefix="historical")
     model.save_checkpoint(0, folder=config.path, prefix="novelty")
-
+    time.sleep(2)
     replay_buffer = Buffer(max_size=config.replay_buffer_size)
     learn_rate = config.replay_buffer_size // config.replay_buffer_reuse
 
@@ -467,8 +474,28 @@ def alpha_zero(config: Config):
     eval_workers = [EvalWorker.remote(config) for _ in range(config.eval_levels)]
     eval_games = 0
 
-    t = ray.get(novelty_worker.play_game.remote(0, 1, 0, evaluation=True))
-    outcome_matrix = np.array([[t.returns[1]]])
+    # print(policy_pool.policy_names())
+    # t = ray.get(novelty_worker.play_game.remote(0, 1, 0, evaluation=True))
+    outcome_matrix = np.array([[0]])
+
+    # seed the workers with the matrix
+    novelty_worker.update_matrix.remote(outcome_matrix)
+    for worker in workers:
+        worker.update_matrix.remote(outcome_matrix)
+
+    for eval_worker in eval_workers:
+        eval_worker.update_matrix.remote(outcome_matrix)
+
+    response_vector = ray.get(novelty_worker.current_v_pop.remote())
+    a_vec = np.array(response_vector).flatten()
+    outcome_matrix = np.array([[a_vec[0]]])
+
+    novelty_worker.update_matrix.remote(outcome_matrix)
+    for worker in workers:
+        worker.update_matrix.remote(outcome_matrix)
+
+    for eval_worker in eval_workers:
+        eval_worker.update_matrix.remote(outcome_matrix)
 
     now = time.time()
     last_time = now
@@ -541,14 +568,18 @@ def alpha_zero(config: Config):
             except AssertionError:
                 import pdb;
                 pdb.set_trace()
-            if is_vector_novel:
-                try:
-                    outcome_matrix = np.vstack((outcome_matrix, a_vec))
-                except ValueError:
-                    import pdb;
-                    pdb.set_trace()
-                # save the model checkpoint
-                model.save_checkpoint(model_id=i, folder=config.path, prefix='novelty')
+
+            if i % (config.checkpoint_freq//2) == 0:
+
+                if is_vector_novel:
+                    try:
+                        outcome_matrix = np.vstack((outcome_matrix, a_vec))
+                        # save the model checkpoint
+                        model.save_checkpoint(model_id=i, folder=config.path, prefix='novelty')
+                    except ValueError:
+                        import pdb;
+                        pdb.set_trace()
+
                 # Update the outcome matrix
                 novelty_worker.update_matrix.remote(outcome_matrix)
                 for worker in workers:
@@ -556,6 +587,8 @@ def alpha_zero(config: Config):
 
                 for eval_worker in eval_workers:
                     eval_worker.update_matrix.remote(outcome_matrix)
+
+                time.sleep(2)
 
         # adds data into the replay buffer and other similar containers
         parse_trajectories_into_dataset(trajectories=trajectories,
@@ -597,6 +630,10 @@ def alpha_zero(config: Config):
 
             for eval_worker in eval_workers:
                 eval_worker.update_matrix.remote(outcome_matrix)
+
+            time.sleep(2)
+
+        print(outcome_matrix)
 
         # hold until these eval runs are all done, then collect the data
         _ = ray.get(working_eval_refs)
@@ -675,11 +712,11 @@ if __name__ == "__main__":
 
     config = Config(
         game="python_dominated_connect_four",
-        path="puck.dc4",
+        path="puck.dc4.evaltrail",
         learning_rate=0.001,
         weight_decay=0.0001,
         train_batch_size=1024,
-        replay_buffer_size=100000,
+        replay_buffer_size=50000,
         replay_buffer_reuse=4,
         max_steps=500,
         checkpoint_freq=50,
@@ -699,7 +736,7 @@ if __name__ == "__main__":
         observation_shape=None,
         output_size=None,
         alpha_puck=False,
-        neighbors=5,
+        neighbors=1,
         threshold=0.15,
         rollout_type=None,
     )

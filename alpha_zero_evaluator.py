@@ -65,11 +65,13 @@ class AlphaZeroEvaluator(mcts.Evaluator):
             # Returns the probabilities for all legal actions.
             _, policy = self._inference(state)
             return [(action, policy[action]) for action in state.legal_actions()]
-        
+
     def update_A(self, response_matrix):
         pass
 
-    
+    def update_current_agent(self, state_dict):
+        self._model.load_state_dict(state_dict)
+        self.clear_cache()
 
 
 class AZPopulationEvaluator(mcts.Evaluator):
@@ -111,6 +113,8 @@ class AZPopulationEvaluator(mcts.Evaluator):
         # calculate the knn distance between a and a's knn in A
         # if that distance is greater than some threshold, return True, dist
         # else return False, dist
+        if self.A.size <= 1:
+            return True, 1
         a = np.array(a)
         if self.A.shape[1] != a.shape[0]:
             print(self.A, a)
@@ -121,12 +125,14 @@ class AZPopulationEvaluator(mcts.Evaluator):
         avg_dist = np.mean(knn_dists)
         normalized_dist = avg_dist / (2 * np.sqrt(a.shape[0]))
         return normalized_dist >= self.threshold, normalized_dist
-    
+
     def evaluate(self, state):
         historical_agents, novelty_agents = self.policy_pool.policy_names()
         # only compute the response for agents in the current matrix
         #  it is possible, but unlikely, that we saved a new agent into the policy pool while doing some computation
-        historical_agents = historical_agents[:self.A.shape[1]]
+        if self.A.size < 0:
+            historical_agents = historical_agents[:self.A.shape[1]]
+
         working_state = state.clone()
         # play a game against each historical bot
         response_vector = []
@@ -137,17 +143,18 @@ class AZPopulationEvaluator(mcts.Evaluator):
                 p1, p2 = self.guided_rollout(working_state, self.current_agent, self.opponent)
                 response_vector.append(p2)
             else:
-                p1, p2 = self.opponent.evaluator.evaluate(working_state)  # how well do I, the opponent, 
+                p1, p2 = self.opponent.evaluator.evaluate(working_state)  # how well do I, the opponent,
+
                                                                           #  think I'll do in this board state?
                 response_vector.append(p1)
-        
+
         # check novelty of response vector
         is_novel, dist = self.is_novel(response_vector)
         return np.array([dist, -dist])
 
     def prior(self, state):
         return self.current_agent.evaluator.prior(state)
-    
+
     def guided_rollout(self, state, p1_bot, p2_bot, n=1):
         results = [0, 0]
         for _ in range(n):
@@ -181,7 +188,7 @@ class AZPopulationEvaluator(mcts.Evaluator):
 
     def update_model(self, state_dict):
         self.update_current_agent(state_dict)
-    
+
     def update_current_agent(self, state_dict):
         self.current_agent.evaluator._model.load_state_dict(state_dict)
         self.current_agent.evaluator.clear_cache()
@@ -200,7 +207,7 @@ class AZPopulationEvaluator(mcts.Evaluator):
             print("A:", self.A)
             print("nov_names:", nov_names)
             print("hist_names:", hist_names)
-            
+
             # is there a way to load missing ????
-            
+
             # raise AssertionError("A and policy pool do not match in dims")

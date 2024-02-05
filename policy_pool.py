@@ -43,5 +43,5 @@ class PolicyStore:
 
     def get_policy(self, name: str):
         path = os.path.join(self.path, name + '.pt')
-        state_dict = torch.load(path)
+        state_dict = torch.load(path, map_location='cpu')
         return state_dict
