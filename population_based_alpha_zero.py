@@ -37,6 +37,7 @@ class Config(
     collections.namedtuple(
         "Config",
         [
+            "seed",
             "game",
             "path",
             "learning_rate",
@@ -77,13 +78,14 @@ class Config(
 class TrajectoryState(object):
     """A particular point along a trajectory."""
 
-    def __init__(self, observation, current_player, legals_mask, action, policy, value):
+    def __init__(self, observation, current_player, legals_mask, action, policy, value, novelty=0):
         self.observation = observation
         self.current_player = current_player
         self.legals_mask = legals_mask
         self.action = action
         self.policy = policy
         self.value = value
+        self.novelty = novelty
 
 
 class Trajectory(object):
@@ -147,7 +149,7 @@ class BaseWorker:
         trajectory = Trajectory()
         actions = []
         state = self.game.new_initial_state()
-        random_state = np.random.RandomState()
+        random_state = np.random.RandomState(int(time.time_ns()) % 2**32 + game_num)
 
         while not state.is_terminal():
             if state.is_chance_node():
@@ -167,7 +169,7 @@ class BaseWorker:
                 if len(actions) >= temperature_drop:
                     action = root.best_child().action
                 else:
-                    action = np.random.choice(len(policy), p=policy)
+                    action = random_state.choice(len(policy), p=policy)
                 trajectory.states.append(
                     TrajectoryState(
                         state.observation_tensor(),
@@ -183,6 +185,8 @@ class BaseWorker:
                 state.apply_action(action)
 
         trajectory.returns = state.returns()
+        print("Game {}: Returns: {}; Actions: {}".format(game_num,
+            " ".join(map(str, trajectory.returns)), " ".join(actions)))
         return trajectory
 
 
@@ -208,9 +212,11 @@ class RolloutWorker(BaseWorker):
                                                         self.device),
                                                self.config)
 
+        self.population_bot = _init_bot(self.config, self.game, self.evaluator, evaluation)
+
         self.bots = [
-            _init_bot(self.config, self.game, self.evaluator, evaluation),
-            _init_bot(self.config, self.game, self.evaluator, evaluation),
+            self.population_bot,
+            self.population_bot,
         ]
 
 
@@ -228,7 +234,14 @@ class RolloutWorker(BaseWorker):
         if not self.evaluator.A.size == 0:
             historical_agents = historical_agents[:self.evaluator.A.shape[1]]
             novelty_agents = novelty_agents[:self.evaluator.A.shape[0]]
-        p1 = self.evaluator.current_agent
+        # if we're playing for novelty against archive,
+        #  have full population vs opponent
+        if historical:
+            p1 = self.population_bot
+        # if we're playing to build a new column of the novelty matrix,
+        #  then we have agent vs agent
+        else:
+            p1 = self.evaluator.current_agent
         p2 = self.evaluator.opponent
         self.bots = [p1, p2] if historical else [p2, p1]
         opponent_set = historical_agents if historical else novelty_agents
@@ -247,8 +260,8 @@ class RolloutWorker(BaseWorker):
 
         self.evaluator.update_opponent(old_opponent)
         self.bots = [
-            _init_bot(self.config, self.game, self.evaluator, False),
-            _init_bot(self.config, self.game, self.evaluator, False),
+            self.population_bot,
+            self.population_bot,
         ]
         return np.array(response_vector)
 
@@ -368,7 +381,7 @@ def parse_trajectories_into_dataset(trajectories,
 
         # this will automatically drop the oldest inputs once the buffer fills up
         replay_buffer.extend(
-            TrainInput(s.observation, s.legals_mask, s.policy, p1_outcome)
+            TrainInput(s.observation, s.legals_mask, s.policy, p1_outcome, s.value)
             for s in trajectory.states
         )
 
@@ -468,6 +481,7 @@ def alpha_zero(config: Config):
     outcomes = stats.HistogramNamed(["Player1", "Player2", "Draw"])
     evals = [Buffer(config.evaluation_window) for _ in range(config.eval_levels)]
     total_trajectories = 0
+    game_num = 0
 
     workers = [RolloutWorker.remote(config) for _ in range(config.num_actors)]
     novelty_worker = RolloutWorker.remote(config)
@@ -518,22 +532,24 @@ def alpha_zero(config: Config):
 
         # collect new data to learn off of
         working_refs = []
-        rollouts = 1000 if config.game == 'connect_four' else 4000
+        rollouts = 1000 if config.game == 'connect_four' else 2500
         reps = rollouts // config.num_actors
         for k in range(reps):
             for j in range(config.num_actors):
+                time.sleep(0.001)
+                game_num += 1
                 working_refs.append(
                     workers[j].play_game.remote(
-                        k, config.temperature, config.temperature_drop
+                        game_num, config.temperature, config.temperature_drop
                     )
                 )
 
         # eval the policy against mcts agents
         working_eval_refs = []
         for n in range(5 * config.eval_levels):
-            game_num = eval_games + n
-            az_player = game_num % 2
-            difficulty = (game_num // 2) % config.eval_levels
+            game_number = eval_games + n
+            az_player = game_number % 2
+            difficulty = (game_number // 2) % config.eval_levels
             max_simulations = int(config.max_simulations * (10 ** (difficulty / 2)))
             # select eval worker to send game to
             # change selection to choose worker at random for this rollout
@@ -542,7 +558,7 @@ def alpha_zero(config: Config):
             eval_worker = eval_workers[eval_worker_id]
             working_eval_refs.append(
                 eval_worker.play_game.remote(
-                    game_num, 1, 0
+                    game_number, 1, 0
                 )
             )
 
@@ -559,7 +575,7 @@ def alpha_zero(config: Config):
         response_vector = ray.get(novelty_worker.current_v_pop.remote())
 
         a_vec = np.array(response_vector).flatten()
-        # logger.print('a_vec', a_vec)
+        # print('a_vec', i, a_vec)
         # logger.print('outcome_matrix', outcome_matrix)
         novelty_distance = 0
         if a_vec.shape[0] >= 2 and outcome_matrix.shape[1] >= 2:
@@ -569,26 +585,21 @@ def alpha_zero(config: Config):
                 import pdb;
                 pdb.set_trace()
 
-            if i % (config.checkpoint_freq//2) == 0:
-
-                if is_vector_novel:
-                    try:
-                        outcome_matrix = np.vstack((outcome_matrix, a_vec))
-                        # save the model checkpoint
-                        model.save_checkpoint(model_id=i, folder=config.path, prefix='novelty')
-                    except ValueError:
-                        import pdb;
-                        pdb.set_trace()
-
-                # Update the outcome matrix
-                novelty_worker.update_matrix.remote(outcome_matrix)
-                for worker in workers:
-                    worker.update_matrix.remote(outcome_matrix)
-
-                for eval_worker in eval_workers:
-                    eval_worker.update_matrix.remote(outcome_matrix)
-
-                time.sleep(2)
+            # if i % (config.checkpoint_freq//2) == 0:
+            if is_vector_novel:
+                model.save_checkpoint(model_id=i, folder=config.path, prefix='novelty')
+                try:
+                    outcome_matrix = np.vstack((outcome_matrix, a_vec))
+                except ValueError:
+                    import pdb;
+                    pdb.set_trace()
+            # Update the outcome matrix
+            novelty_worker.update_matrix.remote(outcome_matrix)
+            for worker in workers:
+                worker.update_matrix.remote(outcome_matrix)
+            for eval_worker in eval_workers:
+                eval_worker.update_matrix.remote(outcome_matrix)
+            time.sleep(2)
 
         # adds data into the replay buffer and other similar containers
         parse_trajectories_into_dataset(trajectories=trajectories,
@@ -653,11 +664,18 @@ def alpha_zero(config: Config):
             L_new = np.dot(M_normalized_new, M_normalized_new.T)
             outcom_matrix_cardinality = np.trace(np.eye(L_new.shape[0]) - np.linalg.inv(L_new + np.eye(L_new.shape[0])))
 
+        random_data_sample = replay_buffer.sample(config.train_batch_size)
+        _, _, mcts_policy, _, nov_mcts = zip(*random_data_sample)
+        mcts_policy = np.array(mcts_policy)
+        nov_mcts = np.array(nov_mcts).mean()
+
         batch_size_stats = stats.BasicStats()  # Only makes sense in C++.
         batch_size_stats.add(1)
         data_log.write(
             {
                 "step": i,
+                "mcts_nov": nov_mcts,
+                "mcts_dist": np.mean(mcts_policy, axis=0).tolist(),
                 "total_states": replay_buffer.total_seen,
                 "states_per_s": num_states / seconds,
                 "states_per_s_actor": num_states / (config.num_actors * seconds),
@@ -711,20 +729,21 @@ if __name__ == "__main__":
     ray.init(num_gpus=1)
 
     config = Config(
+        seed=42,
         game="python_dominated_connect_four",
-        path="puck.dc4.evaltrail",
+        path="puck.dc4.debug",
         learning_rate=0.001,
         weight_decay=0.0001,
-        train_batch_size=1024,
+        train_batch_size=512,
         replay_buffer_size=50000,
         replay_buffer_reuse=4,
         max_steps=500,
-        checkpoint_freq=50,
+        checkpoint_freq=100,
         num_actors=10,
         evaluators=6,
         evaluation_window=100,
         eval_levels=6,
-        uct_c=2,
+        uct_c=3,
         max_simulations=100,
         policy_alpha=1,
         policy_epsilon=0.25,
@@ -738,12 +757,12 @@ if __name__ == "__main__":
         alpha_puck=False,
         neighbors=1,
         threshold=0.15,
-        rollout_type=None,
+        rollout_type='no_planning',
     )
 
     os.environ['WANDB_API_KEY'] = "ADD ME"
     # run = wandb.init(project="AlphaPuck", config=config._asdict())
-    
+
 
     alpha_zero(config)
 

@@ -101,7 +101,7 @@ class AZPopulationEvaluator(mcts.Evaluator):
             config,
             game,
             AlphaZeroEvaluator(self.game, self.opponent_model, self.cache_size),
-            False,
+            True,
         )
 
         self.A = np.array([[]])
@@ -144,7 +144,6 @@ class AZPopulationEvaluator(mcts.Evaluator):
                 response_vector.append(p2)
             else:
                 p1, p2 = self.opponent.evaluator.evaluate(working_state)  # how well do I, the opponent,
-
                                                                           #  think I'll do in this board state?
                 response_vector.append(p1)
 
@@ -171,10 +170,6 @@ class AZPopulationEvaluator(mcts.Evaluator):
                 if not sum(probs) == 1:
                     probs = np.array(probs)
                     probs /= probs.sum()
-                try:
-                    action = np.random.choice(actions, p=probs)
-                except ValueError:
-                    import pdb; pdb.set_trace()
                 action = np.random.choice(actions, p=probs)
                 working_state.apply_action(action)
 

@@ -132,8 +132,8 @@ class SearchNode(object):
 
     def puct_value(self, parent_explore_count, uct_c):
         """Returns the PUCT value of child."""
-        if self.outcome is not None:
-            return self.outcome[self.player]
+        # if self.outcome is not None:
+        #     return self.outcome[self.player]
 
         return (
             self.explore_count and self.total_reward / self.explore_count
@@ -428,8 +428,17 @@ class MCTSBot(pyspiel.Bot):
         for _ in range(self.max_simulations):
             visit_path, working_state = self._apply_tree_policy(root, state)
             if working_state.is_terminal():
+                # if I add the actual rewards into the total reward, 
+                #  then the scaling gets all messed up.
+                # usually, the rewards are novelty-scores that mcts is trying to maximize
+                #  however, if I incorporate the win/loss reward, then the novelty scores get 
+                #  overwhelmed by the win/loss reward because novelty scores are usually quite small ~0.5 max
+                #  and the win/loss reward is 1 or -1. This then throws off the puct calculations / best-child calculations
+                #  to be more about the win/loss reward than the novelty score which makes us a) lose the novelty score and
+                #  b) play the dominant strategy of the game which is exactly what we're trying to avoid.
                 returns = working_state.returns()
                 visit_path[-1].outcome = returns
+                returns = [0, 0]
                 solved = False
             else:
                 returns = self.evaluator.evaluate(working_state)

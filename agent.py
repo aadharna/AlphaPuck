@@ -47,14 +47,14 @@ class NNAgent(nn.Module):
             nn.ReLU(),
             layer_init(nn.Linear(128, 128)),
             nn.ReLU(),
-            # layer_init(nn.Linear(128, 128)),
-            # nn.ReLU(),
-            # layer_init(nn.Linear(128, 128)),
-            # nn.ReLU(),
-            # layer_init(nn.Linear(128, 128)),
-            # nn.ReLU(),
-            # layer_init(nn.Linear(128, 128)),
-            # nn.ReLU(),
+            layer_init(nn.Linear(128, 128)),
+            nn.ReLU(),
+            layer_init(nn.Linear(128, 128)),
+            nn.ReLU(),
+            layer_init(nn.Linear(128, 128)),
+            nn.ReLU(),
+            layer_init(nn.Linear(128, 128)),
+            nn.ReLU(),
         )
         self.critic = nn.Sequential(
             layer_init(nn.Linear(128, 64)),
@@ -137,24 +137,26 @@ class NNAgent(nn.Module):
 
 
 class TrainInput(
-    collections.namedtuple("TrainInput", "observation legals_mask policy value")
+    collections.namedtuple("TrainInput", "observation legals_mask policy value novelty")
 ):
     """Inputs for training the Model."""
 
     @staticmethod
     def stack(train_inputs, device):
-        observation, legals_mask, policy, value = zip(*train_inputs)
+        observation, legals_mask, policy, value, novelty = zip(*train_inputs)
         observation = np.array(observation)
         legals_mask = np.array(legals_mask)
         policy = np.array(policy)
         value = np.array(value)
+        novelty = np.array(novelty)
 
         obs = torch.from_numpy(observation).float().to(device)
         mask = torch.from_numpy(legals_mask).bool().to(device)
         policy = torch.from_numpy(policy).float().to(device)
         value = torch.from_numpy(value).unsqueeze(1).float().to(device)
+        novelty = torch.from_numpy(novelty).unsqueeze(1).float().to(device)
 
-        return TrainInput(obs, mask, policy, value)
+        return TrainInput(obs, mask, policy, value, novelty)
 
 
 class Losses(collections.namedtuple("Losses", "policy value l2")):
