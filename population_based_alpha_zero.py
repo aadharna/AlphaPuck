@@ -616,7 +616,7 @@ def alpha_zero(config: Config):
         print(i, losses)
 
         # save a checkpoint
-        if i % config.checkpoint_freq == 0:
+        if i % config.checkpoint_freq == 0 or i == 1:
             model.save_checkpoint(i, folder=config.path, prefix="historical")
             
             historical_agents, novelty_agents = policy_pool.policy_names()
