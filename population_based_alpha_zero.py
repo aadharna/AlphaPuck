@@ -149,7 +149,7 @@ class BaseWorker:
         trajectory = Trajectory()
         actions = []
         state = self.game.new_initial_state()
-        random_state = np.random.RandomState(int(time.time_ns()) % 2**32 + game_num)
+        random_state = np.random.RandomState((int(time.time_ns()) + game_num) % 2**32)
 
         while not state.is_terminal():
             if state.is_chance_node():
