@@ -141,13 +141,14 @@ class AZPopulationEvaluator(mcts.Evaluator):
             state_dict = self.policy_pool.get_policy(agent_name)
             self.update_opponent(state_dict)
             if self.rollout_type == "no_planning":
-                p1, p2 = self.guided_rollout(working_state, self.current_agent, self.opponent)
                 if player_id == 0: # p1 is the current player that we're trying to evaluate
+                    p1, p2 = self.guided_rollout(working_state, self.current_agent, self.opponent)
                     response_vector.append(p2)
                 else:
                     # p2 is the current player that we're trying to evaluate 
                     # because the novelty matrix is based on the player 1's perspective, 
                     #  we need to flip the sign when we're evaluating player 2's choices w.r.t. novelty
+                    p1, p2 = self.guided_rollout(working_state, self.opponent, self.current_agent)
                     response_vector.append(p1)
             else:
                 p1, p2 = self.opponent.evaluator.evaluate(working_state)  # how well do I, the opponent,
