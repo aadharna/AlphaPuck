@@ -68,6 +68,7 @@ class DominatedConnectFourState(pyspiel.State):
         self.__pyspiel_game_ = game
         self.__pyspiel_game_state = self.__pyspiel_game_.new_initial_state()
         self._is_terminal = False
+        self.dominated = False
 
         self.action_memory = {
             0: [],
@@ -93,6 +94,7 @@ class DominatedConnectFourState(pyspiel.State):
             self.action_memory[self.current_player()].pop(0)
         if np.all(self.action_memory[self.current_player()] == [1, 6]):
             # end the game
+            self.dominated = True
             self._is_terminal = True
             self._returns = [0, 0]
             self._returns[self.current_player()] = 1

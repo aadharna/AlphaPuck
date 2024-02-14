@@ -184,6 +184,7 @@ class BaseWorker:
                 actions.append(action_str)
                 state.apply_action(action)
 
+        trajectory.dominated = getattr(state, 'dominated', False)
         trajectory.returns = state.returns()
         print("Game {}: Returns: {}; Actions: {}".format(game_num,
             " ".join(map(str, trajectory.returns)), " ".join(actions)))
@@ -365,11 +366,13 @@ def parse_trajectories_into_dataset(trajectories,
                                     outcomes,
                                     stage_count,
                                     value_accuracies,
-                                    value_predictions):
+                                    value_predictions,
+                                    games_dominated):
 
     for trajectory in trajectories:
         game_lengths.add(len(trajectory.states))
         game_lengths_hist.add(len(trajectory.states))
+        games_dominated.add(1 if trajectory.dominated else 0)
 
         p1_outcome = trajectory.returns[0]
         if p1_outcome > 0:
@@ -476,6 +479,7 @@ def alpha_zero(config: Config):
     stage_count = 7
     value_accuracies = [stats.BasicStats() for _ in range(stage_count)]
     value_predictions = [stats.BasicStats() for _ in range(stage_count)]
+    games_dominated = stats.BasicStats()
     game_lengths = stats.BasicStats()
     game_lengths_hist = stats.HistogramNumbered(game.max_game_length() + 1)
     outcomes = stats.HistogramNamed(["Player1", "Player2", "Draw"])
@@ -609,7 +613,8 @@ def alpha_zero(config: Config):
                                         outcomes=outcomes,
                                         stage_count=stage_count,
                                         value_accuracies=value_accuracies,
-                                        value_predictions=value_predictions)
+                                        value_predictions=value_predictions,
+                                        games_dominated=games_dominated)
         
         # update the model weights
         losses = learn(config, optimizer, model, replay_buffer, i)
@@ -684,6 +689,7 @@ def alpha_zero(config: Config):
                 "queue_size": 0,  # Only available in C++.
                 "game_length": game_lengths.as_dict,
                 "game_length_hist": game_lengths_hist.data,
+                "games_dominated": games_dominated.as_dict,
                 "outcomes": outcomes.data,
                 "value_accuracy": [v.as_dict for v in value_accuracies],
                 "value_prediction": [v.as_dict for v in value_predictions],
