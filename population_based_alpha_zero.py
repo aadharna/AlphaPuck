@@ -94,6 +94,7 @@ class Trajectory(object):
     def __init__(self):
         self.states = []
         self.returns = None
+        self.dominated = None
 
     def add(self, information_state, action, policy):
         self.states.append((information_state, action, policy))
