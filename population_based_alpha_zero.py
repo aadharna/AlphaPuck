@@ -527,6 +527,18 @@ def alpha_zero(config: Config):
         game_lengths.reset()
         game_lengths_hist.reset()
         outcomes.reset()
+        games_dominated.reset()
+
+        if i % 25 == 0:
+            # kill the workers periodically to avoid memory leaks
+            for w in workers:
+                ray.kill(w)
+            del workers
+            time.sleep(2)
+            workers = [RolloutWorker.remote(config) for _ in range(config.num_actors)]
+            for worker in workers:
+                worker.update_matrix.remote(outcome_matrix)
+            time.sleep(5)
 
         # update the model weights in the workers
         for worker in workers:
