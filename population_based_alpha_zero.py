@@ -750,7 +750,7 @@ if __name__ == "__main__":
     config = Config(
         seed=42,
         game="python_dominated_connect_four",
-        path="puck.dc4.debug",
+        path="puck.dc4.vfn",
         learning_rate=0.001,
         weight_decay=0.0001,
         train_batch_size=512,
@@ -776,7 +776,7 @@ if __name__ == "__main__":
         alpha_puck=False,
         neighbors=1,
         threshold=0.15,
-        rollout_type='no_planning',
+        rollout_type=None,
     )
 
     os.environ['WANDB_API_KEY'] = "ADD ME"
