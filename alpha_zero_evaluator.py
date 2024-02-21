@@ -3,7 +3,7 @@ import re
 import numpy as np
 
 import pyspiel
-import mcts
+import custom_mcts
 from open_spiel.python.utils import lru_cache
 
 from policy_pool import PolicyStore
@@ -12,7 +12,7 @@ from policy_pool import PolicyStore
 import torch
 
 
-class AlphaZeroEvaluator(mcts.Evaluator):
+class AlphaZeroEvaluator(custom_mcts.Evaluator):
     """An AlphaZero MCTS Evaluator."""
 
     def __init__(self, game, model, cache_size=2**16):
@@ -74,7 +74,7 @@ class AlphaZeroEvaluator(mcts.Evaluator):
         self.clear_cache()
 
 
-class AZPopulationEvaluator(mcts.Evaluator):
+class AZPopulationEvaluator(custom_mcts.Evaluator):
     def __init__(self, game, init_bot_fn, primary_model, opponent_model, config):
         self.game = game
         self.config = config

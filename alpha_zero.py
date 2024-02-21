@@ -25,7 +25,7 @@ import torch.nn.functional as F
 
 import wandb
 
-import mcts
+import custom_mcts
 
 from agent import NNAgent, TrainInput, Losses
 from alpha_zero_evaluator import AlphaZeroEvaluator, AZPopulationEvaluator
@@ -122,14 +122,14 @@ class Buffer(object):
 
 def _init_bot(config, game, evaluator_, evaluation):
     noise = None if evaluation else (config.policy_epsilon, config.policy_alpha)
-    return mcts.MCTSBot(
+    return custom_mcts.MCTSBot(
         game,
         config.uct_c,
         config.max_simulations,
         evaluator_,
         solve=False,
         dirichlet_noise=noise,
-        child_selection_fn=mcts.SearchNode.puct_value,
+        child_selection_fn=custom_mcts.SearchNode.puct_value,
         verbose=False,
         dont_return_chance_node=True,
     )
@@ -235,7 +235,7 @@ class EvalWorker(BaseWorker):
         self.evaluator = AlphaZeroEvaluator(self.game, self.model)
 
         self.results = Buffer(config.evaluation_window)
-        self.random_evaluator = mcts.RandomRolloutEvaluator()
+        self.random_evaluator = custom_mcts.RandomRolloutEvaluator()
         self.evals = [Buffer(config.evaluation_window) for _ in range(config.eval_levels)]
         self.clear_data = False
         self.model.eval()
@@ -256,7 +256,7 @@ class EvalWorker(BaseWorker):
         max_simulations = int(self.config.max_simulations * (10 ** (difficulty / 2)))
         self.bots = [
             _init_bot(self.config, self.game, self.evaluator, True),
-            mcts.MCTSBot(
+            custom_mcts.MCTSBot(
                 self.game,
                 self.config.uct_c,
                 max_simulations,
